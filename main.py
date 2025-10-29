@@ -10,7 +10,8 @@ app = FastAPI(title="Basic User CRUD API")
 
 class User(BaseModel):
     name: str
-    dob: datetime.date = Field(..., description="Date of Birth (YYYY-MM-DD)")
+    age: str
+    dob: str
     address: str
     phone_number: str
     username: str
@@ -18,61 +19,82 @@ class User(BaseModel):
     password: str = Field(..., exclude=True)
 
 
-# In-memory store (username -> user dict)
-user_store: Dict[str, Dict] = {}
+# In-memory store as indexable list by numeric ID. Use None for deleted slots to keep IDs stable.
+user_store: List[Optional[Dict[str, Any]]] = []
 
 
 def is_phone_number_valid(phone_number: str) -> bool:
     return phone_number.isdigit()
-
+def is_age_valid(age: str) -> bool:
+    try:
+        age_int = int(age)
+        return 0 < age_int < 100
+    except ValueError:
+        return False
 # ===== JSON API: CRUD =====
 
 @app.post("/users", response_model=User, status_code=201)
 async def create_user(payload: User):
-    if payload.username in user_store:
-        raise HTTPException(status_code=409, detail="Username already exists")
+    # Enforce unique username
+    for record in user_store:
+        if record is not None and record.get("username") == payload.username:
+            raise HTTPException(status_code=409, detail="Username already exists")
     if not is_phone_number_valid(payload.phone_number):
         raise HTTPException(status_code=422, detail="Invalid phone number. Digits only.")
 
-    user_store[payload.username] = {
+    new_record = {
         "name": payload.name,
+        "age": payload.age,
         "dob": payload.dob,
         "address": payload.address,
         "phone_number": payload.phone_number,
         "username": payload.username,
         "password": payload.password,
     }
-    return User(**user_store[payload.username])
+
+    # Reuse first deleted slot if available, else append
+    inserted_id: Optional[int] = None
+    for i, record in enumerate(user_store):
+        if record is None:
+            user_store[i] = new_record
+            inserted_id = i
+            break
+    if inserted_id is None:
+        user_store.append(new_record)
+        inserted_id = len(user_store) - 1
+
+    return User(**new_record)
     
 
 @app.get("/users", response_model=List[User])
 async def list_users():
     result: List[User] = []
-    for data in user_store.values():
-        result.append(User(**data))
+    for data in user_store:
+        if data is not None:
+            result.append(User(**data))
     return result
     
 
 
-@app.get("/users/{username}", response_model=User)
-async def get_user(username: str):
-    if username not in user_store:
+@app.get("/users/{user_id}", response_model=User)
+async def get_user(user_id: int):
+    if user_id < 0 or user_id >= len(user_store) or user_store[user_id] is None:
         raise HTTPException(status_code=404, detail="User not found")
-    return User(**user_store[username])
+    return User(**user_store[user_id])
 
 
-@app.put("/users/{username}", response_model=User)
-async def replace_user(username: str, payload: User):
-    if username != payload.username and payload.username in user_store:
-        raise HTTPException(status_code=409, detail="Target username already exists")
+@app.put("/users/{user_id}", response_model=User)
+async def replace_user(user_id: int, payload: User):
+    if user_id < 0 or user_id >= len(user_store) or user_store[user_id] is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Username must be unique across other users
+    for i, record in enumerate(user_store):
+        if record is not None and i != user_id and record.get("username") == payload.username:
+            raise HTTPException(status_code=409, detail="Target username already exists")
     if not is_phone_number_valid(payload.phone_number):
         raise HTTPException(status_code=422, detail="Invalid phone number. Digits only.")
 
-    # If username changes, move record
-    if username in user_store and username != payload.username:
-        del user_store[username]
-
-    user_store[payload.username] = {
+    user_store[user_id] = {
         "name": payload.name,
         "dob": payload.dob,
         "address": payload.address,
@@ -80,19 +102,24 @@ async def replace_user(username: str, payload: User):
         "username": payload.username,
         "password": payload.password,
     }
-    return User(**user_store[payload.username])
+    return User(**user_store[user_id])
 
 
-@app.patch("/users/{username}", response_model=User)
-async def update_user(username: str, payload: Dict[str, Any]):
-    if username not in user_store:
+@app.patch("/users/{user_id}", response_model=User)
+async def update_user(user_id: int, payload: Dict[str, Any]):
+    if user_id < 0 or user_id >= len(user_store) or user_store[user_id] is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    current = user_store[username]
+    current = user_store[user_id]
 
     # Username change is not supported in PATCH to keep things simple
     if "username" in payload:
-        payload.pop("username")
+        # Enforce uniqueness against others if username provided
+        new_username = payload["username"]
+        for i, record in enumerate(user_store):
+            if record is not None and i != user_id and record.get("username") == new_username:
+                raise HTTPException(status_code=409, detail="Target username already exists")
+        # Allow updating username after uniqueness check
 
     # Validate phone number if provided
     if "phone_number" in payload and not is_phone_number_valid(str(payload["phone_number"])):
@@ -106,7 +133,7 @@ async def update_user(username: str, payload: Dict[str, Any]):
             raise HTTPException(status_code=422, detail="Invalid dob format. Use YYYY-MM-DD.")
 
     # Apply updates (only known fields)
-    allowed_fields = {"name", "dob", "address", "phone_number", "password"}
+    allowed_fields = {"name", "dob", "address", "phone_number", "password", "username"}
     for key, value in list(payload.items()):
         if key in allowed_fields:
             current[key] = value
@@ -114,11 +141,12 @@ async def update_user(username: str, payload: Dict[str, Any]):
     return User(**current)
 
 
-@app.delete("/users/{username}", status_code=204)
-async def delete_user(username: str):
-    if username not in user_store:
+@app.delete("/users/{user_id}", status_code=204)
+async def delete_user(user_id: int):
+    if user_id < 0 or user_id >= len(user_store) or user_store[user_id] is None:
         raise HTTPException(status_code=404, detail="User not found")
-    del user_store[username]
+    # Mark as deleted without shifting IDs
+    user_store[user_id] = None
     return
 
 
