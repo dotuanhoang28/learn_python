@@ -10,12 +10,11 @@ app = FastAPI(title="Basic User CRUD API")
 
 class User(BaseModel):
     name: str
-    age: str
+    age: int
     dob: str
     address: str
     phone_number: str
     username: str
-    # Keep password required for input, but exclude from all responses
     password: str = Field(..., exclude=True)
 
 
@@ -25,10 +24,16 @@ user_store: List[Optional[Dict[str, Any]]] = []
 
 def is_phone_number_valid(phone_number: str) -> bool:
     return phone_number.isdigit()
-def is_age_valid(age: str) -> bool:
+def is_age_valid(age: int) -> bool:
     try:
         age_int = int(age)
         return 0 < age_int < 100
+    except ValueError:
+        return False
+def is_dob_valid(dob: str) -> bool:
+    try:
+        datetime.date.fromisoformat(dob)
+        return True
     except ValueError:
         return False
 # ===== JSON API: CRUD =====
@@ -41,6 +46,10 @@ async def create_user(payload: User):
             raise HTTPException(status_code=409, detail="Username already exists")
     if not is_phone_number_valid(payload.phone_number):
         raise HTTPException(status_code=422, detail="Invalid phone number. Digits only.")
+    if not is_age_valid(payload.age):
+        raise HTTPException(status_code=422, detail="Invalid age. Must be 1-99.")
+    if not is_dob_valid(payload.dob):
+        raise HTTPException(status_code=422, detail="Invalid dob format. Use DD-MM-YYYY.")
 
     new_record = {
         "name": payload.name,
@@ -93,9 +102,14 @@ async def replace_user(user_id: int, payload: User):
             raise HTTPException(status_code=409, detail="Target username already exists")
     if not is_phone_number_valid(payload.phone_number):
         raise HTTPException(status_code=422, detail="Invalid phone number. Digits only.")
+    if not is_age_valid(payload.age):
+        raise HTTPException(status_code=422, detail="Invalid age. Must be 1-99.")
+    if not is_dob_valid(payload.dob):
+        raise HTTPException(status_code=422, detail="Invalid dob format. Use DD-MM-YYYY.")
 
     user_store[user_id] = {
         "name": payload.name,
+        "age": payload.age,
         "dob": payload.dob,
         "address": payload.address,
         "phone_number": payload.phone_number,
@@ -124,16 +138,17 @@ async def update_user(user_id: int, payload: Dict[str, Any]):
     # Validate phone number if provided
     if "phone_number" in payload and not is_phone_number_valid(str(payload["phone_number"])):
         raise HTTPException(status_code=422, detail="Invalid phone number. Digits only.")
+    
+    # Validate age if provided
+    if "age" in payload and not is_age_valid(str(payload["age"])):
+        raise HTTPException(status_code=422, detail="Invalid age. Must be 1-99.")
 
-    # If dob is provided as string, parse to date
-    if "dob" in payload and isinstance(payload["dob"], str):
-        try:
-            payload["dob"] = datetime.date.fromisoformat(payload["dob"]) 
-        except ValueError:
-            raise HTTPException(status_code=422, detail="Invalid dob format. Use YYYY-MM-DD.")
+    # Validate dob if provided as string
+    if "dob" in payload and isinstance(payload["dob"], str) and not is_dob_valid(payload["dob"]):
+        raise HTTPException(status_code=422, detail="Invalid dob format. Use DD-MM-YYYY.")
 
     # Apply updates (only known fields)
-    allowed_fields = {"name", "dob", "address", "phone_number", "password", "username"}
+    allowed_fields = {"name", "age", "dob", "address", "phone_number", "password", "username"}
     for key, value in list(payload.items()):
         if key in allowed_fields:
             current[key] = value
