@@ -5,7 +5,7 @@ import uvicorn
 import datetime
 import os
 import json
-
+import re
 USER_FILE = os.path.join(os.path.dirname(__file__), "users.txt")
 
 app = FastAPI(title="Basic User CRUD API")
@@ -17,6 +17,7 @@ class User(BaseModel):
     dob: str
     address: str
     phone_number: str
+    email: str
     username: str
     password: str = Field(..., exclude=True)
 
@@ -37,21 +38,41 @@ def load_users_from_file():
 
 user_store: List[Optional[Dict[str, Any]]] = load_users_from_file()
 
+# INSERT_YOUR_CODE
+
+
+
+def is_email_valid(email: str) -> bool:
+    # More specific validation using a regular expression for standard email formats
+    if not isinstance(email, str):
+        return False
+    email_regex = re.compile(
+        r"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)"
+    )
+    return re.match(email_regex, email) is not None
+
+
 
 def is_phone_number_valid(phone_number: str) -> bool:
     return phone_number.isdigit()
+
 def is_age_valid(age: int) -> bool:
     try:
         age_int = int(age)
         return 0 < age_int < 100
     except ValueError:
         return False
+
 def is_dob_valid(dob: str) -> bool:
     try:
-        datetime.date.fromisoformat(dob)
-        return True
+        dob_date = datetime.date.fromisoformat(dob)
+        today = datetime.date.today()
+        age = today.year - dob_date.year - ((today.month, today.day) < (dob_date.month, dob_date.day))
+        # Age must be > 0 and < 100 years
+        return 0 < age < 100
     except ValueError:
         return False
+        
 def save_users_to_file():
     # Only save non-None users
     with open(USER_FILE, "w", encoding="utf-8") as f:
@@ -66,15 +87,19 @@ def save_users_to_file():
 @app.post("/users", response_model=User, status_code=201)
 async def create_user(user: User):
     # Enforce unique username
-    for record in user_store:
-        if record is not None and record.get("username") == user.username:
+    for user_data in user_store:
+        if user_data is not None and user_data.get("username") == user.username:
             raise HTTPException(status_code=409, detail="Username already exists")
+        if user_data is not None and user_data.get("phone_number") == user.phone_number:
+            raise HTTPException(status_code=409, detail="Phone number already exists")
     if not is_phone_number_valid(user.phone_number):
         raise HTTPException(status_code=422, detail="Invalid phone number. Digits only.")
     if not is_age_valid(user.age):
         raise HTTPException(status_code=422, detail="Invalid age. Must be 1-99.")
     if not is_dob_valid(user.dob):
-        raise HTTPException(status_code=422, detail="Invalid dob format. Use YYYY-MM-DD.")
+        raise HTTPException(status_code=422, detail="Invalid date.")
+    if not is_email_valid(user.dob):
+        raise HTTPException(status_code=422, detail="Invalid email format.")
 
     new_user = {
         "name": user.name,
@@ -82,6 +107,7 @@ async def create_user(user: User):
         "dob": user.dob,
         "address": user.address,
         "phone_number": user.phone_number,
+        "email": user.email,
         "username": user.username,
         "password": user.password,
     }
@@ -108,32 +134,32 @@ async def get_user(user_id: int):
     return User(**user_store[user_id])
 
 
-@app.put("/users/{user_id}", response_model=User)
-async def replace_user(user_id: int, user: User):
-    if user_id < 0 or user_id >= len(user_store) or user_store[user_id] is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    # Username must be unique across other users
-    for i, record in enumerate(user_store):
-        if record is not None and i != user_id and record.get("username") == user.username:
-            raise HTTPException(status_code=409, detail="Target username already exists")
-    if not is_phone_number_valid(user.phone_number):
-        raise HTTPException(status_code=422, detail="Invalid phone number. Digits only.")
-    if not is_age_valid(user.age):
-        raise HTTPException(status_code=422, detail="Invalid age. Must be 1-99.")
-    if not is_dob_valid(user.dob):
-        raise HTTPException(status_code=422, detail="Invalid dob format. Use DD-MM-YYYY.")
+# @app.put("/users/{user_id}", response_model=User)
+# async def replace_user(user_id: int, user: User):
+#     if user_id < 0 or user_id >= len(user_store) or user_store[user_id] is None:
+#         raise HTTPException(status_code=404, detail="User not found")
+#     # Username must be unique across other users
+#     for i, record in enumerate(user_store):
+#         if record is not None and i != user_id and record.get("username") == user.username:
+#             raise HTTPException(status_code=409, detail="Target username already exists")
+#     if not is_phone_number_valid(user.phone_number):
+#         raise HTTPException(status_code=422, detail="Invalid phone number. Digits only.")
+#     if not is_age_valid(user.age):
+#         raise HTTPException(status_code=422, detail="Invalid age. Must be 1-99.")
+#     if not is_dob_valid(user.dob):
+#         raise HTTPException(status_code=422, detail="Invalid dob format. Use DD-MM-YYYY.")
 
-    user_store[user_id] = {
-        "name": user.name,
-        "age": user.age,
-        "dob": user.dob,
-        "address": user.address,
-        "phone_number": user.phone_number,
-        "username": user.username,
-        "password": user.password,
-    }
-    save_users_to_file()
-    return User(**user_store[user_id])
+#     user_store[user_id] = {
+#         "name": user.name,
+#         "age": user.age,
+#         "dob": user.dob,
+#         "address": user.address,
+#         "phone_number": user.phone_number,
+#         "username": user.username,
+#         "password": user.password,
+#     }
+#     save_users_to_file()
+#     return User(**user_store[user_id])
 
 
 @app.patch("/users/{user_id}", response_model=User)
@@ -147,8 +173,8 @@ async def update_user(user_id: int, updates: Dict[str, Any]):
     if "username" in updates:
         # Enforce uniqueness against others if username provided
         new_username = updates["username"]
-        for i, record in enumerate(user_store):
-            if record is not None and i != user_id and record.get("username") == new_username:
+        for i, user_data in enumerate(user_store):
+            if user_data is not None and i != user_id and user_data.get("username") == new_username:
                 raise HTTPException(status_code=409, detail="Target username already exists")
         # Allow updating username after uniqueness check
 
@@ -167,10 +193,14 @@ async def update_user(user_id: int, updates: Dict[str, Any]):
 
     # Validate dob if provided as string
     if "dob" in updates and isinstance(updates["dob"], str) and not is_dob_valid(updates["dob"]):
-        raise HTTPException(status_code=422, detail="Invalid dob format. Use DD-MM-YYYY.")
+        raise HTTPException(status_code=422, detail="Invalid dob format. Use YYYY-MM-DD.")
+    
+    # Validate email if provided
+    if "email" in updates and not is_email_valid(str(updates["email"])):
+        raise HTTPException(status_code=422, detail="Invalid email format.")
 
     # Apply updates (only known fields)
-    allowed_fields = {"name", "age", "dob", "address", "phone_number", "password", "username"}
+    allowed_fields = {"name", "age", "dob", "address", "phone_number", "email", "password", "username"}
     for key, value in list(updates.items()):
         if key in allowed_fields:
             current[key] = value
@@ -178,17 +208,14 @@ async def update_user(user_id: int, updates: Dict[str, Any]):
     return User(**current)
 
 
-@app.delete("/users/{user_id}", status_code=204)
+@app.delete("/users/{user_id}")
 async def delete_user(user_id: int):
     if user_id < 0 or user_id >= len(user_store) or user_store[user_id] is None:
         raise HTTPException(status_code=404, detail="User not found")
     # Mark as deleted without shifting IDs
     user_store[user_id] = None
     save_users_to_file()
-    return
-
-
-
+    return {"message": "Delete user successfully"}
 
 
 if __name__ == "__main__":
