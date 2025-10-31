@@ -6,6 +6,8 @@ import datetime
 import os
 import json
 import re
+from sqlalchemy import Column, Integer, String, create_engine, select
+from sqlalchemy.orm import declarative_base, sessionmaker
 USER_FILE = os.path.join(os.path.dirname(__file__), "users.txt")
 
 app = FastAPI(title="Basic User CRUD API")
@@ -38,6 +40,27 @@ def load_users_from_file():
 
 user_store: List[Optional[Dict[str, Any]]] = load_users_from_file()
 
+# === SQLAlchemy setup (SQLite) ===
+DB_PATH = os.path.join(os.path.dirname(__file__), "users.db")
+DATABASE_URL = f"sqlite:///{DB_PATH}"
+Base = declarative_base()
+
+class UserModel(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)
+    age = Column(Integer, nullable=False)
+    dob = Column(String, nullable=False)
+    address = Column(String, nullable=False)
+    phone_number = Column(String, nullable=False, unique=True)
+    email = Column(String, nullable=False)
+    username = Column(String, nullable=False, unique=True)
+    password = Column(String, nullable=False)
+
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+Base.metadata.create_all(engine)
+
 # INSERT_YOUR_CODE
 
 
@@ -47,7 +70,7 @@ def is_email_valid(email: str) -> bool:
     if not isinstance(email, str):
         return False
     email_regex = re.compile(
-        r"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)"
+        r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})*$"
     )
     return re.match(email_regex, email) is not None
 
@@ -98,10 +121,48 @@ async def create_user(user: User):
         raise HTTPException(status_code=422, detail="Invalid age. Must be 1-99.")
     if not is_dob_valid(user.dob):
         raise HTTPException(status_code=422, detail="Invalid date.")
-    if not is_email_valid(user.dob):
+    if not is_email_valid(user.email):
         raise HTTPException(status_code=422, detail="Invalid email format.")
 
-    new_user = {
+    # Save to DB
+    with SessionLocal() as db:
+        db_user = UserModel(
+            name=user.name,
+            age=user.age,
+            dob=user.dob,
+            address=user.address,
+            phone_number=user.phone_number,
+            email=user.email,
+            username=user.username,
+            password=user.password,
+        )
+        db.add(db_user)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Username or phone already exists")
+        db.refresh(db_user)
+
+    # Mirror to file (refresh from DB for simplicity)
+    with SessionLocal() as db:
+        rows = db.execute(select(UserModel)).scalars().all()
+        global user_store
+        user_store = [
+            {
+                "name": r.name,
+                "age": r.age,
+                "dob": r.dob,
+                "address": r.address,
+                "phone_number": r.phone_number,
+                "email": r.email,
+                "username": r.username,
+                "password": r.password,
+            }
+            for r in rows
+        ]
+    save_users_to_file()
+    return User(**{
         "name": user.name,
         "age": user.age,
         "dob": user.dob,
@@ -110,65 +171,54 @@ async def create_user(user: User):
         "email": user.email,
         "username": user.username,
         "password": user.password,
-    }
-
-    user_store.append(new_user)
-    save_users_to_file()
-    return User(**new_user)
+    })
     
 
 @app.get("/users", response_model=List[User])
 async def list_users():
-    result: List[User] = []
-    for data in user_store:
-        if data is not None:
-            result.append(User(**data))
-    return result
+    with SessionLocal() as db:
+        rows = db.execute(select(UserModel)).scalars().all()
+        return [
+            User(
+                name=r.name,
+                age=r.age,
+                dob=r.dob,
+                address=r.address,
+                phone_number=r.phone_number,
+                email=r.email,
+                username=r.username,
+                password=r.password,
+            ) for r in rows
+        ]
     
 
 
 @app.get("/users/{user_id}", response_model=User)
 async def get_user(user_id: int):
-    if user_id < 0 or user_id >= len(user_store) or user_store[user_id] is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    return User(**user_store[user_id])
+    with SessionLocal() as db:
+        row = db.get(UserModel, user_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        return User(
+            name=row.name,
+            age=row.age,
+            dob=row.dob,
+            address=row.address,
+            phone_number=row.phone_number,
+            email=row.email,
+            username=row.username,
+            password=row.password,
+        )
 
-
-# @app.put("/users/{user_id}", response_model=User)
-# async def replace_user(user_id: int, user: User):
-#     if user_id < 0 or user_id >= len(user_store) or user_store[user_id] is None:
-#         raise HTTPException(status_code=404, detail="User not found")
-#     # Username must be unique across other users
-#     for i, record in enumerate(user_store):
-#         if record is not None and i != user_id and record.get("username") == user.username:
-#             raise HTTPException(status_code=409, detail="Target username already exists")
-#     if not is_phone_number_valid(user.phone_number):
-#         raise HTTPException(status_code=422, detail="Invalid phone number. Digits only.")
-#     if not is_age_valid(user.age):
-#         raise HTTPException(status_code=422, detail="Invalid age. Must be 1-99.")
-#     if not is_dob_valid(user.dob):
-#         raise HTTPException(status_code=422, detail="Invalid dob format. Use DD-MM-YYYY.")
-
-#     user_store[user_id] = {
-#         "name": user.name,
-#         "age": user.age,
-#         "dob": user.dob,
-#         "address": user.address,
-#         "phone_number": user.phone_number,
-#         "username": user.username,
-#         "password": user.password,
-#     }
-#     save_users_to_file()
-#     return User(**user_store[user_id])
 
 
 @app.patch("/users/{user_id}", response_model=User)
 async def update_user(user_id: int, updates: Dict[str, Any]):
-    if user_id < 0 or user_id >= len(user_store) or user_store[user_id] is None:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    current = user_store[user_id]
-
+    # Fetch row
+    with SessionLocal() as db:
+        row = db.get(UserModel, user_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
     # Username change is not supported in PATCH to keep things simple
     if "username" in updates:
         # Enforce uniqueness against others if username provided
@@ -203,20 +253,70 @@ async def update_user(user_id: int, updates: Dict[str, Any]):
     allowed_fields = {"name", "age", "dob", "address", "phone_number", "email", "password", "username"}
     for key, value in list(updates.items()):
         if key in allowed_fields:
-            current[key] = value
-    save_users_to_file()
-    return User(**current)
+            setattr(row, key, value)
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Username or phone conflict")
+
+        # refresh file mirror from same session
+        rows = db.execute(select(UserModel)).scalars().all()
+        global user_store
+        user_store = [
+            {
+                "name": r.name,
+                "age": r.age,
+                "dob": r.dob,
+                "address": r.address,
+                "phone_number": r.phone_number,
+                "email": r.email,
+                "username": r.username,
+                "password": r.password,
+            }
+            for r in rows
+        ]
+        save_users_to_file()
+
+        return User(
+            name=row.name,
+            age=row.age,
+            dob=row.dob,
+            address=row.address,
+            phone_number=row.phone_number,
+            email=row.email,
+            username=row.username,
+            password=row.password,
+        )
 
 
 @app.delete("/users/{user_id}")
 async def delete_user(user_id: int):
-    if user_id < 0 or user_id >= len(user_store) or user_store[user_id] is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    # Mark as deleted without shifting IDs
-    user_store[user_id] = None
-    save_users_to_file()
-    return {"message": "Delete user successfully"}
+    with SessionLocal() as db:
+        row = db.get(UserModel, user_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        db.delete(row)
+        db.commit()
+        # refresh file mirror
+        rows = db.execute(select(UserModel)).scalars().all()
+        global user_store
+        user_store = [
+            {
+                "name": r.name,
+                "age": r.age,
+                "dob": r.dob,
+                "address": r.address,
+                "phone_number": r.phone_number,
+                "email": r.email,
+                "username": r.username,
+                "password": r.password,
+            }
+            for r in rows
+        ]
+        save_users_to_file()
+        return {"message": "Delete user successfully"}
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8080, reload=True)
