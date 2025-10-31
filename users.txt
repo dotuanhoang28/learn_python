@@ -1,0 +1,1 @@
+{"name": "Tuan Do", "age": 22, "dob": "1988-07-28", "address": "Ha Tinh", "phone_number": "0941001203", "email": "tuando2003@gmail.com", "username": "karemai", "password": "karemai2003"}
